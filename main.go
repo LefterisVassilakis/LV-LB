@@ -1,7 +1,7 @@
 package main
 
 import (
-	"lvlb/controller"
+	"lv-lb.com/controller"
 
 	"context"
 	"log"
@@ -52,5 +52,5 @@ func main() {
 	ctx := context.Background()
 	
 	lb_controller := controller.New(clientset, ctx)
-	lb_controller.Reconcile()
+	lb_controller.Controller_loop()
 }

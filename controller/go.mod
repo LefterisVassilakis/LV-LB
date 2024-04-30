@@ -1,4 +1,4 @@
-module controller
+module lv-lb.com/controller
 
 go 1.22.2
 
