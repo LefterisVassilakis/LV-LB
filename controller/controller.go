@@ -5,28 +5,31 @@ import (
 	"fmt"
 	"log"
 	"reflect"
+	"strconv"
+	"strings"
 	"time"
 
 	"astuart.co/edgeos-rest/pkg/edgeos"
 	corev1 "k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
 
-type Controller struct{
-	Clientset *kubernetes.Clientset
-	Context context.Context
+type Controller struct {
+	Clientset  *kubernetes.Clientset
+	Context    context.Context
 	LBservices []corev1.Service
-	FWrules []edgeos.PortForward
+	FWrules    []map[string]string
 	EdgeClient *edgeos.Client
 }
 
 func New(clientset *kubernetes.Clientset, ctx context.Context) *Controller {
 	return &Controller{
-		Clientset: clientset,
-		Context: ctx,
+		Clientset:  clientset,
+		Context:    ctx,
 		LBservices: []corev1.Service{},
-		FWrules: []edgeos.PortForward{},
+		FWrules:    []map[string]string{},
 		EdgeClient: nil,
 	}
 }
@@ -40,7 +43,7 @@ func (c *Controller) ConnectClient(addr string, username string, password string
 	if err := client.Login(); err != nil {
 		log.Fatal(err)
 	}
-	
+
 	c.EdgeClient = client
 }
 
@@ -52,14 +55,13 @@ func (c *Controller) listSVC() *corev1.ServiceList {
 	return services
 }
 
-func (c *Controller) listFW() *edgeos.PortForwards {
+func (c *Controller) listFW() []interface{} {
 	feat, err := c.EdgeClient.Feature(edgeos.PortForwarding)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	data := feat["data"].(map[string]interface{})["rules-config"].([]interface{})
-	fmt.Println(reflect.TypeOf(data))
 	return data
 }
 
@@ -71,8 +73,8 @@ func contains(slice interface{}, item interface{}) bool {
 
 	for i := 0; i < valueof.Len(); i++ {
 		if reflect.DeepEqual(valueof.Index(i).Interface(), item) {
-            return true
-        }
+			return true
+		}
 	}
 	return false
 }
@@ -90,24 +92,118 @@ func (c *Controller) listFWrules() {
 	}
 }
 
+func (c *Controller) LBsvc_contains(svc corev1.Service) bool {
+	for _, s := range c.LBservices {
+		for _, port1 := range s.Spec.Ports {
+			for _, port2 := range svc.Spec.Ports {
+				if port1.NodePort == port2.NodePort {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+func LBsvc_contains(svc corev1.Service, LBservices *corev1.ServiceList) bool {
+	for _, s := range LBservices.Items {
+		if s.Spec.Type != "LoadBalancer" {
+			continue
+		}
+		for _, port1 := range s.Spec.Ports {
+			for _, port2 := range svc.Spec.Ports {
+				if port1.NodePort == port2.NodePort {
+					return true
+				}
+			}
+		}
+	}
+	return false
+} 
+
+
 func (c *Controller) Reconcile() {
+	// Add new LB services
 	services := c.listSVC()
 	for _, svc := range services.Items {
-		// log.Println(svc)
-		// log.Printf("%s    %s    %s", svc.Name, svc.Namespace, svc.Spec.Type)
-		if svc.Spec.Type == "LoadBalancer" && !contains(c.LBservices, svc){
+		if svc.Spec.Type == "LoadBalancer" && !c.LBsvc_contains(svc) {
+			// Set external IP of service as the edge router IP
+			newIngress := v1.LoadBalancerIngress{
+				IP:       "139.91.92.131",
+				Hostname: "",
+			}
+			svc.Status.LoadBalancer.Ingress = append(svc.Status.LoadBalancer.Ingress, newIngress)
+
+			_, err := c.Clientset.CoreV1().Services(svc.Namespace).UpdateStatus(context.TODO(), &svc, metav1.UpdateOptions{})
+    		if err != nil {
+        		panic(err.Error())
+    		}
+
 			log.Printf("Adding %s to LBservices", svc.Name)
 			c.LBservices = append(c.LBservices, svc)
 			c.listLBSVC()
 
-			// Set external IP of service as the edge router IP
-
 			// Add port forwarding rule if not already present
+			feat, err := c.EdgeClient.Feature(edgeos.PortForwarding)
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			index := len(c.LBservices) - 1
+			portForwards := make(map[string]string)
+			portForwards["description"] = "LV-LB-" + strconv.Itoa(index)
+			portForwards["forward-to-address"] = "192.168.1.108"
+			portForwards["forward-to-port"] = strconv.Itoa(int(svc.Spec.Ports[0].NodePort))
+			portForwards["original-port"] = strconv.Itoa(int(svc.Spec.Ports[0].NodePort))
+			portForwards["protocol"] = "tcp"
+
+			d := feat["data"].(map[string]interface{})["rules-config"].([]interface{})
+
+			d = append(d, portForwards)
+
+			c.FWrules = append(c.FWrules, portForwards)
+
+			feat["data"].(map[string]interface{})["rules-config"] = d
+
+			// log.Println(c.EdgeClient.SetFeature(edgeos.PortForwarding, feat["data"]))
+			c.EdgeClient.SetFeature(edgeos.PortForwarding, feat["data"])
+		}
+	}
+
+	// Remove LB services
+	for i, svc := range c.LBservices {
+		if !LBsvc_contains(svc, services) {
+			log.Printf("Removing %s from LBservices", svc.Name)
+			c.LBservices = append(c.LBservices[:i], c.LBservices[i+1:]...)
+			log.Printf("Remove FW rule for service")
+			FWrules := c.listFW()
+			for i, rule := range FWrules {
+				if strings.Contains(rule.(map[string]interface{})["description"].(string), "LV-LB-") && 
+				rule.(map[string]interface{})["forward-to-port"].(string) == strconv.Itoa(int(svc.Spec.Ports[0].NodePort)) && 
+				rule.(map[string]interface{})["forward-to-address"].(string) == "192.168.1.108" {
+					FWrules = append(FWrules[:i], FWrules[i+1:]...)
+					feat, err := c.EdgeClient.Feature(edgeos.PortForwarding)
+					if err != nil {
+						log.Fatal(err)
+					}
+					feat["data"].(map[string]interface{})["rules-config"] = FWrules
+					c.EdgeClient.SetFeature(edgeos.PortForwarding, feat["data"])
+					break
+				}
+			}
+
+			for i, rule := range c.FWrules{
+				if strings.Contains(rule["description"], "LV-LB-") && 
+				rule["forward-to-port"] == strconv.Itoa(int(svc.Spec.Ports[0].NodePort)) {
+					c.FWrules = append(c.FWrules[:i], c.FWrules[i+1:]...)
+				}
+			}
+
+
 		}
 	}
 }
 
-func (c *Controller) Controller_loop(){
+func (c *Controller) Controller_loop() {
 	for {
 		c.Reconcile()
 		time.Sleep(2 * time.Second)
