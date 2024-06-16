@@ -6,6 +6,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"strconv"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -13,6 +14,17 @@ import (
 
 
 func main() {
+	if len(os.Args) != 2 {
+        log.Println("Usage: go run main.go [internal_state]")
+        os.Exit(1)
+    }
+
+	internal_state := os.Args[1]
+	internal_state_bool, err := strconv.ParseBool(internal_state)
+    if err != nil {
+        log.Fatal(err)
+    }
+
 	// Get the path to the kubeconfig file.
 	kubeconfig := os.Getenv("KUBECONFIG")
 	if kubeconfig == "" {
@@ -33,7 +45,7 @@ func main() {
 
 	ctx := context.Background()
 
-	lb_controller := controller.New(clientset, ctx, true)
+	lb_controller := controller.New(clientset, ctx, internal_state_bool)
 	lb_controller.ConnectClient("https://139.91.92.131", "ubnt", "raspberryk8s")
 	lb_controller.Controller_loop()
 }

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"regexp"
 
 	"astuart.co/edgeos-rest/pkg/edgeos"
 	corev1 "k8s.io/api/core/v1"
@@ -57,6 +58,10 @@ func (c *Controller) listSVC() *corev1.ServiceList {
 		log.Fatalf("Error listing services: %v", err)
 	}
 	return services
+}
+
+func description_equal(description string, svcName string, port string) bool {
+	return strings.Contains(description, "LV-LB-" + svcName + "-" + port)
 }
 
 func (c *Controller) listFW() []map[string]string {
@@ -137,7 +142,7 @@ func (c *Controller) LBsvc_has_FWrule(svc corev1.Service) bool {
 	FWrules := c.listFW()
 	for _, port := range svc.Spec.Ports {
 		for _, rule := range FWrules {
-			if strings.Contains(rule["description"], "LV-LB-" + svc.Name) && rule["forward-to-port"] == strconv.Itoa(int(port.NodePort)) &&
+			if description_equal(rule["description"], svc.Name, strconv.Itoa(int(port.NodePort))) && rule["forward-to-port"] == strconv.Itoa(int(port.NodePort)) &&
 			rule["forward-to-address"] == "192.168.1.108" && rule["original-port"] == strconv.Itoa(int(port.NodePort)) {
 				return true
 			}
@@ -174,7 +179,7 @@ func (c *Controller) add_FWrule(svc corev1.Service) {
 	for i, _ := range svc.Spec.Ports {
 
 		portForwards := make(map[string]string)
-		portForwards["description"] = "LV-LB-" + svc.Name
+		portForwards["description"] = "LV-LB-" + svc.Name + "-" + strconv.Itoa(int(svc.Spec.Ports[i].NodePort))
 		portForwards["forward-to-address"] = "192.168.1.108"
 		portForwards["forward-to-port"] = strconv.Itoa(int(svc.Spec.Ports[i].NodePort))
 		portForwards["original-port"] = strconv.Itoa(int(svc.Spec.Ports[i].NodePort))
@@ -267,7 +272,7 @@ func (c *Controller) FWrules_need() []map[string]string{
 	for _, svc := range services.Items {
 		for i, _ := range svc.Spec.Ports {
 			portForwards := make(map[string]string)
-			portForwards["description"] = "LV-LB-" + svc.Name
+			portForwards["description"] = "LV-LB-" + svc.Name + "-" + strconv.Itoa(int(svc.Spec.Ports[i].NodePort))
 			portForwards["forward-to-address"] = "192.168.1.108"
 			portForwards["forward-to-port"] = strconv.Itoa(int(svc.Spec.Ports[i].NodePort))
 			portForwards["original-port"] = strconv.Itoa(int(svc.Spec.Ports[i].NodePort))
@@ -302,6 +307,23 @@ func (c *Controller) delete_FWrules(rules []map[string]string) {
 	c.EdgeClient.SetFeature(edgeos.PortForwarding, feat["data"])
 }
 
+func (c *Controller) is_my_rule(rule map[string]string) bool {
+	pattern := `^LV-LB-[a-zA-Z0-9\-]+-\d+$`
+	re := regexp.MustCompile(pattern)
+
+	return re.MatchString(rule["description"])
+}
+
+func (c *Controller) remove_other_rules(rules []map[string]string) []map[string]string{
+	for i, rule := range rules {
+		if !c.is_my_rule(rule) {
+			rules = append(rules[:i], rules[i+1:]...)
+		}
+	}
+	return rules
+}
+
+
 func (c *Controller) Reconcile() {
 	update := false
 	// Observe new LB services
@@ -314,17 +336,18 @@ func (c *Controller) Reconcile() {
 				update = true
 				c.addIPtoLBsvc(svc)
 				c.add_FWrule(svc)
+				has_FWrule = true
 			}
 		}
 	}
+
+	neededFWrules := c.FWrules_need()
 
 	if c.internal_state {
 		oldFWrules, err := loadData("backup.json")
 		if err != nil {
 			log.Fatal(err)
 		}
-		// fmt.Printf("Old FW rules: %v\n", oldFWrules)
-		neededFWrules := c.FWrules_need()
 		// fmt.Printf("Current FW rules: %v\n\n", neededFWrules)
 		rules_to_delete := FWrules_to_delete(oldFWrules, neededFWrules)
 		// fmt.Printf("Rules to delete: %v\n", rules_to_delete)
@@ -340,6 +363,15 @@ func (c *Controller) Reconcile() {
 			if err != nil {
 				log.Fatal(err)
 			}
+		}
+	}else{ // no internal state
+		oldFWrules := c.listFW()
+
+		rules_to_delete := FWrules_to_delete(oldFWrules, neededFWrules)
+		rules_to_delete = c.remove_other_rules(rules_to_delete)
+
+		if len(rules_to_delete) > 0 {
+			c.delete_FWrules(rules_to_delete)
 		}
 	}
 }
