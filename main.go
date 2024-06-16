@@ -7,27 +7,10 @@ import (
 	"log"
 	"os"
 
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-func getSVC(ctx context.Context, clientset *kubernetes.Clientset, namespace string, name string) *corev1.Service {
-	svc, err := clientset.CoreV1().Services(namespace).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		log.Fatalf("Error getting service: %v", err)
-	}
-	return svc
-}
-
-func updateSVC(ctx context.Context, clientset *kubernetes.Clientset, svc *corev1.Service) *corev1.Service {
-	svc, err := clientset.CoreV1().Services(svc.Namespace).Update(ctx, svc, metav1.UpdateOptions{})
-	if err != nil {
-		log.Fatalf("Error updating service: %v", err)
-	}
-	return svc
-}
 
 func main() {
 	// Get the path to the kubeconfig file.
@@ -50,7 +33,7 @@ func main() {
 
 	ctx := context.Background()
 
-	lb_controller := controller.New(clientset, ctx)
+	lb_controller := controller.New(clientset, ctx, true)
 	lb_controller.ConnectClient("https://139.91.92.131", "ubnt", "raspberryk8s")
 	lb_controller.Controller_loop()
 }
