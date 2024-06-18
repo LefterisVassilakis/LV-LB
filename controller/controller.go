@@ -1,16 +1,17 @@
 package controller
 
 import (
+	//"reflect"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
-	"encoding/json"
-	"io"
-	"os"
-	"regexp"
 
 	"astuart.co/edgeos-rest/pkg/edgeos"
 	corev1 "k8s.io/api/core/v1"
@@ -20,21 +21,21 @@ import (
 )
 
 type Controller struct {
-	Clientset  *kubernetes.Clientset
-	Context    context.Context
-	LBservices []corev1.Service
-	FWrules    []map[string]string
-	EdgeClient *edgeos.Client
+	Clientset      *kubernetes.Clientset
+	Context        context.Context
+	LBservices     []corev1.Service
+	FWrules        []map[string]string
+	EdgeClient     *edgeos.Client
 	internal_state bool
 }
 
 func New(clientset *kubernetes.Clientset, ctx context.Context, int_st bool) *Controller {
 	return &Controller{
-		Clientset:  clientset,
-		Context:    ctx,
-		LBservices: []corev1.Service{},
-		FWrules:    []map[string]string{},
-		EdgeClient: nil,
+		Clientset:      clientset,
+		Context:        ctx,
+		LBservices:     []corev1.Service{},
+		FWrules:        []map[string]string{},
+		EdgeClient:     nil,
 		internal_state: int_st,
 	}
 }
@@ -61,7 +62,9 @@ func (c *Controller) listSVC() *corev1.ServiceList {
 }
 
 func description_equal(description string, svcName string, port string) bool {
-	return strings.Contains(description, "LV-LB-" + svcName + "-" + port)
+	//log.Println(description)
+	//log.Println("LV-LB-"+svcName+"-"+port)
+	return strings.Contains(description, "LV-LB-"+svcName+"-"+port)
 }
 
 func (c *Controller) listFW() []map[string]string {
@@ -70,32 +73,38 @@ func (c *Controller) listFW() []map[string]string {
 		log.Fatal(err)
 	}
 
+	log.Println(feat["data"])
+	//log.Println(feat["data"].(map[string]interface{})["rules-config"])
+	//if feat["data"].(map[string]interface{})["rules-config"] == "" ||
+	//feat["data"].(map[string]interface{})["rules-config"] == nil{
+	//	return []map[string]string{}
+	//}
 	rawRules := feat["data"].(map[string]interface{})["rules-config"].([]interface{})
 
-    var rules []map[string]string
-    for _, rawRule := range rawRules {
-        ruleMap, ok := rawRule.(map[string]interface{})
-        if !ok {
-            // Handle the case where the element is not of type map[string]interface{}
-            continue
-        }
+	var rules []map[string]string
+	for _, rawRule := range rawRules {
+		ruleMap, ok := rawRule.(map[string]interface{})
+		if !ok {
+			// Handle the case where the element is not of type map[string]interface{}
+			continue
+		}
 
-        stringRule := make(map[string]string)
-        for k, v := range ruleMap {
-            if str, ok := v.(string); ok {
-                stringRule[k] = str
-            } else {
-                // Handle the case where the value is not of type string
-                // You might want to log a warning or handle it differently based on your requirements
-                fmt.Printf("Warning: Unexpected value type for key %q\n", k)
-            }
-        }
+		stringRule := make(map[string]string)
+		for k, v := range ruleMap {
+			if str, ok := v.(string); ok {
+				stringRule[k] = str
+			} else {
+				// Handle the case where the value is not of type string
+				// You might want to log a warning or handle it differently based on your requirements
+				fmt.Printf("Warning: Unexpected value type for key %q\n", k)
+			}
+		}
 
-        // Append the converted rule to the rules slice
-        rules = append(rules, stringRule)
-    }
+		// Append the converted rule to the rules slice
+		rules = append(rules, stringRule)
+	}
 
-    return rules
+	return rules
 }
 
 func (c *Controller) LBsvc_contains(svc corev1.Service) bool {
@@ -110,6 +119,8 @@ func (c *Controller) LBsvc_contains(svc corev1.Service) bool {
 	}
 	return false
 }
+
+// to delete
 func LBsvc_contains(svc corev1.Service, LBservices *corev1.ServiceList) bool {
 	for _, s := range LBservices.Items {
 		if s.Spec.Type != "LoadBalancer" {
@@ -124,14 +135,14 @@ func LBsvc_contains(svc corev1.Service, LBservices *corev1.ServiceList) bool {
 		}
 	}
 	return false
-} 
+}
 
 func data_contains(data []interface{}, item map[string]string) bool {
 	for _, d := range data {
 		d := d.(map[string]interface{})
-		if d["description"] == item["description"] && d["forward-to-port"] == item["forward-to-port"] && 
-		d["forward-to-address"] == item["forward-to-address"] && d["protocol"] == item["protocol"] &&
-		d["original-port"] == item["original-port"]{
+		if d["description"] == item["description"] && d["forward-to-port"] == item["forward-to-port"] &&
+			d["forward-to-address"] == item["forward-to-address"] && d["protocol"] == item["protocol"] &&
+			d["original-port"] == item["original-port"] {
 			return true
 		}
 	}
@@ -143,7 +154,7 @@ func (c *Controller) LBsvc_has_FWrule(svc corev1.Service) bool {
 	for _, port := range svc.Spec.Ports {
 		for _, rule := range FWrules {
 			if description_equal(rule["description"], svc.Name, strconv.Itoa(int(port.NodePort))) && rule["forward-to-port"] == strconv.Itoa(int(port.NodePort)) &&
-			rule["forward-to-address"] == "192.168.1.108" && rule["original-port"] == strconv.Itoa(int(port.NodePort)) {
+				rule["forward-to-address"] == "192.168.1.108" && rule["original-port"] == strconv.Itoa(int(port.NodePort)) {
 				return true
 			}
 		}
@@ -151,11 +162,9 @@ func (c *Controller) LBsvc_has_FWrule(svc corev1.Service) bool {
 	return false
 }
 
-
-
 func (c *Controller) addIPtoLBsvc(svc corev1.Service) {
 	newIngress := v1.LoadBalancerIngress{
-		IP:       "139.91.92.131",
+		IP: "139.91.92.131",
 	}
 
 	svc.Status.LoadBalancer.Ingress = append(svc.Status.LoadBalancer.Ingress, newIngress)
@@ -172,6 +181,11 @@ func (c *Controller) add_FWrule(svc corev1.Service) {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	//if feat["data"].(map[string]interface{})["rules-config"] == "" ||
+	//feat["data"].(map[string]interface{})["rules-config"] == nil{
+	//	return 
+	//}
 
 	d := feat["data"].(map[string]interface{})["rules-config"].([]interface{})
 	newFWrule := false
@@ -198,63 +212,63 @@ func (c *Controller) add_FWrule(svc corev1.Service) {
 	if newFWrule { // Check if FW rules have changed
 		feat["data"].(map[string]interface{})["rules-config"] = d
 		c.EdgeClient.SetFeature(edgeos.PortForwarding, feat["data"])
-	}	
+	}
 }
 
 func saveData(data []map[string]string, filename string) error {
-    // Marshal the list of maps to JSON
-    jsonData, err := json.Marshal(data)
-    if err != nil {
-        return err
-    }
-    
-    // Write the JSON data to a file
-    file, err := os.Create(filename)
-    if err != nil {
-        return err
-    }
-    defer file.Close()
+	// Marshal the list of maps to JSON
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
 
-    _, err = file.Write(jsonData)
-    return err
+	// Write the JSON data to a file
+	file, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	_, err = file.Write(jsonData)
+	return err
 }
 
 func loadData(filename string) ([]map[string]string, error) {
-    // Open the file
-    file, err := os.Open(filename)
-    if err != nil {
-        return nil, err
-    }
-    defer file.Close()
+	// Open the file
+	file, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
 
-    // Read the JSON data from the file
-    jsonData, err := io.ReadAll(file)
-    if err != nil {
-        return nil, err
-    }
+	// Read the JSON data from the file
+	jsonData, err := io.ReadAll(file)
+	if err != nil {
+		return nil, err
+	}
 
 	if len(jsonData) == 0 {
 		return []map[string]string{}, nil
 	}
-    
-    // Unmarshal the JSON data into a list of maps
-    var data []map[string]string
-    err = json.Unmarshal(jsonData, &data)
-    if err != nil {
-        return nil, err
-    }
-    
-    return data, nil
+
+	// Unmarshal the JSON data into a list of maps
+	var data []map[string]string
+	err = json.Unmarshal(jsonData, &data)
+	if err != nil {
+		return nil, err
+	}
+
+	return data, nil
 }
 
-func FWrules_to_delete(oldFWrules []map[string]string, currFWrules []map[string]string) []map[string]string{
+func FWrules_to_delete(oldFWrules []map[string]string, currFWrules []map[string]string) []map[string]string {
 	rule_to_delete := []map[string]string{}
 	for i, old_rule := range oldFWrules {
 		found := false
 		for _, curr_rule := range currFWrules {
-			if old_rule["description"] == curr_rule["description"] && old_rule["forward-to-port"] == curr_rule["forward-to-port"] && 
-			old_rule["forward-to-address"] == curr_rule["forward-to-address"] && old_rule["protocol"] == curr_rule["protocol"] &&
-			old_rule["original-port"] == curr_rule["original-port"]{
+			if old_rule["description"] == curr_rule["description"] && old_rule["forward-to-port"] == curr_rule["forward-to-port"] &&
+				old_rule["forward-to-address"] == curr_rule["forward-to-address"] && old_rule["protocol"] == curr_rule["protocol"] &&
+				old_rule["original-port"] == curr_rule["original-port"] {
 				found = true
 				break
 			}
@@ -265,8 +279,8 @@ func FWrules_to_delete(oldFWrules []map[string]string, currFWrules []map[string]
 	}
 	return rule_to_delete
 }
-	
-func (c *Controller) FWrules_need() []map[string]string{
+
+func (c *Controller) FWrules_need() []map[string]string {
 	FWrules_needed := []map[string]string{}
 	services := c.listSVC()
 	for _, svc := range services.Items {
@@ -284,19 +298,23 @@ func (c *Controller) FWrules_need() []map[string]string{
 	return FWrules_needed
 }
 
-func (c *Controller) delete_FWrules(rules []map[string]string) {
+func (c *Controller) Delete_FWrules(rules []map[string]string) {
 	feat, err := c.EdgeClient.Feature(edgeos.PortForwarding)
 	if err != nil {
 		log.Fatal(err)
 	}
 
+	//if feat["data"].(map[string]interface{})["rules-config"] == "" ||
+	//feat["data"].(map[string]interface{})["rules-config"] == nil{
+	//	return
+	//}
 	d := feat["data"].(map[string]interface{})["rules-config"].([]interface{})
 
 	for _, rule := range rules {
 		for i, _ := range d {
-			if d[i].(map[string]interface{})["description"] == rule["description"] && d[i].(map[string]interface{})["forward-to-port"] == rule["forward-to-port"] && 
-			d[i].(map[string]interface{})["forward-to-address"] == rule["forward-to-address"] && d[i].(map[string]interface{})["protocol"] == rule["protocol"] &&
-			d[i].(map[string]interface{})["original-port"] == rule["original-port"] {
+			if d[i].(map[string]interface{})["description"] == rule["description"] && d[i].(map[string]interface{})["forward-to-port"] == rule["forward-to-port"] &&
+				d[i].(map[string]interface{})["forward-to-address"] == rule["forward-to-address"] && d[i].(map[string]interface{})["protocol"] == rule["protocol"] &&
+				d[i].(map[string]interface{})["original-port"] == rule["original-port"] {
 				d = append(d[:i], d[i+1:]...)
 				break
 			}
@@ -314,7 +332,7 @@ func (c *Controller) is_my_rule(rule map[string]string) bool {
 	return re.MatchString(rule["description"])
 }
 
-func (c *Controller) remove_other_rules(rules []map[string]string) []map[string]string{
+func (c *Controller) remove_other_rules(rules []map[string]string) []map[string]string {
 	for i, rule := range rules {
 		if !c.is_my_rule(rule) {
 			rules = append(rules[:i], rules[i+1:]...)
@@ -322,7 +340,6 @@ func (c *Controller) remove_other_rules(rules []map[string]string) []map[string]
 	}
 	return rules
 }
-
 
 func (c *Controller) Reconcile() {
 	update := false
@@ -354,7 +371,7 @@ func (c *Controller) Reconcile() {
 
 		// delete rules from router and make update true
 		if len(rules_to_delete) > 0 {
-			c.delete_FWrules(rules_to_delete)
+			c.Delete_FWrules(rules_to_delete)
 			update = true
 		}
 
@@ -364,19 +381,22 @@ func (c *Controller) Reconcile() {
 				log.Fatal(err)
 			}
 		}
-	}else{ // no internal state
+	} else { // no internal state
 		oldFWrules := c.listFW()
 
 		rules_to_delete := FWrules_to_delete(oldFWrules, neededFWrules)
 		rules_to_delete = c.remove_other_rules(rules_to_delete)
 
 		if len(rules_to_delete) > 0 {
-			c.delete_FWrules(rules_to_delete)
+			c.Delete_FWrules(rules_to_delete)
 		}
 	}
 }
 
 func (c *Controller) Controller_loop() {
+	if c.EdgeClient == nil {
+		log.Fatal("EdgeClient is not connected")
+	}
 	for {
 		c.Reconcile()
 		time.Sleep(2 * time.Second)
