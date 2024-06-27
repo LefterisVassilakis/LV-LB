@@ -1,6 +1,10 @@
 package main
 
 import (
+	"bufio"
+	"fmt"
+	"strings"
+
 	"lv-lb.com/controller"
 
 	"context"
@@ -25,6 +29,36 @@ func main() {
         log.Fatal(err)
     }
 
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Printf("Enter the IP of your router: ")
+	router_ip, _ := reader.ReadString('\n')
+	if err != nil {
+		log.Fatal(err)
+	}
+	router_ip = strings.TrimSuffix(router_ip, "\n")
+	router_ip = "https://" + router_ip
+
+	fmt.Printf("Enter the username for your router: ")
+	router_username, _ := reader.ReadString('\n')
+	if err != nil {
+		log.Fatal(err)
+	}
+	router_username = strings.TrimSuffix(router_username, "\n")
+
+	fmt.Printf("Enter the password for your router: ")
+	router_password, _ := reader.ReadString('\n')
+	if err != nil {
+		log.Fatal(err)
+	}
+	router_password = strings.TrimSuffix(router_password, "\n")
+
+	fmt.Printf("Enter the IP of your node: ")
+	node_ip, _ := reader.ReadString('\n')
+	if err != nil {
+		log.Fatal(err)
+	}
+	node_ip = strings.TrimSuffix(node_ip, "\n")
+
 	// Get the path to the kubeconfig file.
 	kubeconfig := os.Getenv("KUBECONFIG")
 	if kubeconfig == "" {
@@ -45,7 +79,10 @@ func main() {
 
 	ctx := context.Background()
 
-	lb_controller := controller.New(clientset, ctx, internal_state_bool)
-	lb_controller.ConnectClient("https://139.91.92.131", "ubnt", "raspberryk8s")
+	lb_controller := controller.New(clientset, ctx, internal_state_bool, node_ip)
+	// fmt.Println(router_ip)
+	// fmt.Println(router_username)
+	// fmt.Println(router_password)
+	lb_controller.ConnectClient(router_ip, router_username, router_password)
 	lb_controller.Controller_loop()
 }

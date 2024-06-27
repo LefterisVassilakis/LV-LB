@@ -27,9 +27,11 @@ type Controller struct {
 	FWrules        []map[string]string
 	EdgeClient     *edgeos.Client
 	internal_state bool
+	RouterIp 	   string
+	NodeIp         string
 }
 
-func New(clientset *kubernetes.Clientset, ctx context.Context, int_st bool) *Controller {
+func New(clientset *kubernetes.Clientset, ctx context.Context, int_st bool, NodeIp string) *Controller {
 	return &Controller{
 		Clientset:      clientset,
 		Context:        ctx,
@@ -37,6 +39,8 @@ func New(clientset *kubernetes.Clientset, ctx context.Context, int_st bool) *Con
 		FWrules:        []map[string]string{},
 		EdgeClient:     nil,
 		internal_state: int_st,
+		RouterIp: 	   "",
+		NodeIp:         NodeIp,
 	}
 }
 
@@ -50,6 +54,7 @@ func (c *Controller) ConnectClient(addr string, username string, password string
 		log.Fatal(err)
 	}
 
+	c.RouterIp = addr
 	c.EdgeClient = client
 }
 
@@ -67,13 +72,33 @@ func description_equal(description string, svcName string, port string) bool {
 	return strings.Contains(description, "LV-LB-"+svcName+"-"+port)
 }
 
-func (c *Controller) listFW() []map[string]string {
-	feat, err := c.EdgeClient.Feature(edgeos.PortForwarding)
-	if err != nil {
-		log.Fatal(err)
+func empty_rules(feat map[string]interface{}) bool {
+	// Check if "data" exists and is a map
+	data, dataExists := feat["data"].(map[string]interface{})
+	if !dataExists || data == nil {
+		return true
+	}
+	
+	// Check if "rules-config" exists within "data" and is not nil or an empty string
+	rulesConfig, rulesConfigExists := data["rules-config"]
+	if !rulesConfigExists || rulesConfig == nil || rulesConfig == "" {
+		return true
 	}
 
-	log.Println(feat["data"])
+	return false
+}
+
+func (c *Controller) listFW() []map[string]string {
+	feat, err := c.EdgeClient.Feature(edgeos.PortForwarding)
+	for empty_rules(feat){
+		if err != nil {
+			log.Fatal(err)
+		}
+		time.Sleep(2*time.Second)
+		feat, err = c.EdgeClient.Feature(edgeos.PortForwarding)
+	}
+
+	//log.Println(feat["data"])
 	//log.Println(feat["data"].(map[string]interface{})["rules-config"])
 	//if feat["data"].(map[string]interface{})["rules-config"] == "" ||
 	//feat["data"].(map[string]interface{})["rules-config"] == nil{
@@ -154,7 +179,7 @@ func (c *Controller) LBsvc_has_FWrule(svc corev1.Service) bool {
 	for _, port := range svc.Spec.Ports {
 		for _, rule := range FWrules {
 			if description_equal(rule["description"], svc.Name, strconv.Itoa(int(port.NodePort))) && rule["forward-to-port"] == strconv.Itoa(int(port.NodePort)) &&
-				rule["forward-to-address"] == "192.168.1.108" && rule["original-port"] == strconv.Itoa(int(port.NodePort)) {
+				rule["forward-to-address"] == c.NodeIp && rule["original-port"] == strconv.Itoa(int(port.NodePort)) {
 				return true
 			}
 		}
@@ -164,7 +189,7 @@ func (c *Controller) LBsvc_has_FWrule(svc corev1.Service) bool {
 
 func (c *Controller) addIPtoLBsvc(svc corev1.Service) {
 	newIngress := v1.LoadBalancerIngress{
-		IP: "139.91.92.131",
+		IP: strings.TrimPrefix(c.RouterIp, "https://"),
 	}
 
 	svc.Status.LoadBalancer.Ingress = append(svc.Status.LoadBalancer.Ingress, newIngress)
@@ -178,14 +203,13 @@ func (c *Controller) addIPtoLBsvc(svc corev1.Service) {
 
 func (c *Controller) add_FWrule(svc corev1.Service) {
 	feat, err := c.EdgeClient.Feature(edgeos.PortForwarding)
-	if err != nil {
-		log.Fatal(err)
+	for empty_rules(feat){
+		if err != nil {
+			log.Fatal(err)
+		}
+		time.Sleep(2*time.Second)
+		feat, err = c.EdgeClient.Feature(edgeos.PortForwarding)
 	}
-
-	//if feat["data"].(map[string]interface{})["rules-config"] == "" ||
-	//feat["data"].(map[string]interface{})["rules-config"] == nil{
-	//	return 
-	//}
 
 	d := feat["data"].(map[string]interface{})["rules-config"].([]interface{})
 	newFWrule := false
@@ -194,7 +218,7 @@ func (c *Controller) add_FWrule(svc corev1.Service) {
 
 		portForwards := make(map[string]string)
 		portForwards["description"] = "LV-LB-" + svc.Name + "-" + strconv.Itoa(int(svc.Spec.Ports[i].NodePort))
-		portForwards["forward-to-address"] = "192.168.1.108"
+		portForwards["forward-to-address"] = c.NodeIp
 		portForwards["forward-to-port"] = strconv.Itoa(int(svc.Spec.Ports[i].NodePort))
 		portForwards["original-port"] = strconv.Itoa(int(svc.Spec.Ports[i].NodePort))
 		portForwards["protocol"] = "tcp"
@@ -235,7 +259,7 @@ func saveData(data []map[string]string, filename string) error {
 
 func loadData(filename string) ([]map[string]string, error) {
 	// Open the file
-	file, err := os.Open(filename)
+	file, err := os.OpenFile(filename, os.O_RDWR|os.O_CREATE, 0666)
 	if err != nil {
 		return nil, err
 	}
@@ -287,7 +311,7 @@ func (c *Controller) FWrules_need() []map[string]string {
 		for i, _ := range svc.Spec.Ports {
 			portForwards := make(map[string]string)
 			portForwards["description"] = "LV-LB-" + svc.Name + "-" + strconv.Itoa(int(svc.Spec.Ports[i].NodePort))
-			portForwards["forward-to-address"] = "192.168.1.108"
+			portForwards["forward-to-address"] = c.NodeIp
 			portForwards["forward-to-port"] = strconv.Itoa(int(svc.Spec.Ports[i].NodePort))
 			portForwards["original-port"] = strconv.Itoa(int(svc.Spec.Ports[i].NodePort))
 			portForwards["protocol"] = "tcp"
@@ -300,14 +324,14 @@ func (c *Controller) FWrules_need() []map[string]string {
 
 func (c *Controller) Delete_FWrules(rules []map[string]string) {
 	feat, err := c.EdgeClient.Feature(edgeos.PortForwarding)
-	if err != nil {
-		log.Fatal(err)
+	for empty_rules(feat){
+		if err != nil {
+			log.Fatal(err)
+		}
+		time.Sleep(2*time.Second)
+		feat, err = c.EdgeClient.Feature(edgeos.PortForwarding)
 	}
 
-	//if feat["data"].(map[string]interface{})["rules-config"] == "" ||
-	//feat["data"].(map[string]interface{})["rules-config"] == nil{
-	//	return
-	//}
 	d := feat["data"].(map[string]interface{})["rules-config"].([]interface{})
 
 	for _, rule := range rules {
@@ -361,7 +385,7 @@ func (c *Controller) Reconcile() {
 	neededFWrules := c.FWrules_need()
 
 	if c.internal_state {
-		oldFWrules, err := loadData("backup.json")
+		oldFWrules, err := loadData("state.json")
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -376,7 +400,7 @@ func (c *Controller) Reconcile() {
 		}
 
 		if update {
-			err := saveData(neededFWrules, "backup.json")
+			err := saveData(neededFWrules, "state.json")
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -386,6 +410,7 @@ func (c *Controller) Reconcile() {
 
 		rules_to_delete := FWrules_to_delete(oldFWrules, neededFWrules)
 		rules_to_delete = c.remove_other_rules(rules_to_delete)
+		//log.Println(rules_to_delete)
 
 		if len(rules_to_delete) > 0 {
 			c.Delete_FWrules(rules_to_delete)
