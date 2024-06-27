@@ -1,23 +1,21 @@
-FROM golang:1.22-alpine AS root-deps
-
-WORKDIR /app
-COPY go.mod go.sum ./
-COPY controller/go.mod controller/go.sum ./controller/
-RUN go mod download
-
 FROM golang:1.22-alpine AS builder
 
-WORKDIR /app
-COPY --from=root-deps /go/pkg /go/pkg
-COPY controller/go.mod controller/go.sum ./controller/
+ARG TARGETOS
+ARG TARGETARCH
+
 WORKDIR /app/controller
+COPY controller/ ./
 RUN go mod download
-COPY controller/ .
-RUN go build -o /app/main
+WORKDIR /app
+COPY go.mod go.sum main.go ./
+RUN go mod download
+RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /app/main
 
 
 FROM alpine:latest
 WORKDIR /root/
+COPY .kube /root/.kube
+COPY .minikube /.minikube
 COPY --from=builder /app/main .
 RUN chmod +x ./main
-ENTRYPOINT ["./main"]
+ENTRYPOINT [ "./main" ]
