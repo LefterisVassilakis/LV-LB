@@ -1,6 +1,8 @@
 module lv-lb.com/controller
 
-go 1.22.2
+go 1.22.0
+
+toolchain go1.22.3
 
 require (
 	astuart.co/edgeos-rest v1.0.0
