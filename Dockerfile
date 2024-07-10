@@ -14,8 +14,8 @@ RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /app/main
 
 FROM alpine:latest
 WORKDIR /root/
-COPY .kube /root/.kube
-COPY .minikube /.minikube
 COPY --from=builder /app/main .
 RUN chmod +x ./main
 ENTRYPOINT [ "./main" ]
+
+

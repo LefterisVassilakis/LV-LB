@@ -1,0 +1,78 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: service-admin
+rules:
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["services/status"]
+  verbs: ["get", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: service-admin-binding
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: default
+roleRef:
+  kind: ClusterRole
+  name: service-admin
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lv-lb-config
+data:
+  state: "false"
+  router_ip: "139.91.92.131"
+  router_username: "ubnt"
+  router_password: "raspberryk8s"
+  node_ip: "192.168.1.108"
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: lv-lb-pod
+spec:
+  serviceAccountName: default
+  containers:
+    - name: lv-lb-container 
+      image: lefterisv/lv-lb:1.1
+      command: ["./main"]
+      args:
+        - "$(STATE)"
+        - "$(ROUTER_IP)"
+        - "$(ROUTER_USERNAME)"
+        - "$(ROUTER_PASSWORD)"
+        - "$(NODE_IP)"
+      env:
+        - name: STATE
+          valueFrom:
+            configMapKeyRef:
+              name: lv-lb-config
+              key: state
+        - name: ROUTER_IP
+          valueFrom:
+            configMapKeyRef:
+              name: lv-lb-config
+              key: router_ip
+        - name: ROUTER_USERNAME
+          valueFrom:
+            configMapKeyRef:
+              name: lv-lb-config
+              key: router_username
+        - name: ROUTER_PASSWORD
+          valueFrom:
+            configMapKeyRef:
+              name: lv-lb-config
+              key: router_password
+        - name: NODE_IP
+          valueFrom:
+            configMapKeyRef:
+              name: lv-lb-config
+              key: node_ip

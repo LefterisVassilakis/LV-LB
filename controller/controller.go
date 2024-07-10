@@ -23,10 +23,8 @@ import (
 type Controller struct {
 	Clientset      *kubernetes.Clientset
 	Context        context.Context
-	LBservices     []corev1.Service
-	FWrules        []map[string]string
 	EdgeClient     *edgeos.Client
-	internal_state bool
+	state 			bool
 	RouterIp 	   string
 	NodeIp         string
 }
@@ -35,10 +33,8 @@ func New(clientset *kubernetes.Clientset, ctx context.Context, int_st bool, Node
 	return &Controller{
 		Clientset:      clientset,
 		Context:        ctx,
-		LBservices:     []corev1.Service{},
-		FWrules:        []map[string]string{},
 		EdgeClient:     nil,
-		internal_state: int_st,
+		state: int_st,
 		RouterIp: 	   "",
 		NodeIp:         NodeIp,
 	}
@@ -67,19 +63,15 @@ func (c *Controller) listSVC() *corev1.ServiceList {
 }
 
 func description_equal(description string, svcName string, port string) bool {
-	//log.Println(description)
-	//log.Println("LV-LB-"+svcName+"-"+port)
 	return strings.Contains(description, "LV-LB-"+svcName+"-"+port)
 }
 
 func empty_rules(feat map[string]interface{}) bool {
-	// Check if "data" exists and is a map
 	data, dataExists := feat["data"].(map[string]interface{})
 	if !dataExists || data == nil {
 		return true
 	}
 	
-	// Check if "rules-config" exists within "data" and is not nil or an empty string
 	rulesConfig, rulesConfigExists := data["rules-config"]
 	if !rulesConfigExists || rulesConfig == nil || rulesConfig == "" {
 		return true
@@ -98,19 +90,12 @@ func (c *Controller) listFW() []map[string]string {
 		feat, err = c.EdgeClient.Feature(edgeos.PortForwarding)
 	}
 
-	//log.Println(feat["data"])
-	//log.Println(feat["data"].(map[string]interface{})["rules-config"])
-	//if feat["data"].(map[string]interface{})["rules-config"] == "" ||
-	//feat["data"].(map[string]interface{})["rules-config"] == nil{
-	//	return []map[string]string{}
-	//}
 	rawRules := feat["data"].(map[string]interface{})["rules-config"].([]interface{})
 
 	var rules []map[string]string
 	for _, rawRule := range rawRules {
 		ruleMap, ok := rawRule.(map[string]interface{})
 		if !ok {
-			// Handle the case where the element is not of type map[string]interface{}
 			continue
 		}
 
@@ -119,47 +104,13 @@ func (c *Controller) listFW() []map[string]string {
 			if str, ok := v.(string); ok {
 				stringRule[k] = str
 			} else {
-				// Handle the case where the value is not of type string
-				// You might want to log a warning or handle it differently based on your requirements
 				fmt.Printf("Warning: Unexpected value type for key %q\n", k)
 			}
 		}
-
-		// Append the converted rule to the rules slice
 		rules = append(rules, stringRule)
 	}
 
 	return rules
-}
-
-func (c *Controller) LBsvc_contains(svc corev1.Service) bool {
-	for _, s := range c.LBservices {
-		for _, port1 := range s.Spec.Ports {
-			for _, port2 := range svc.Spec.Ports {
-				if port1.NodePort == port2.NodePort {
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
-// to delete
-func LBsvc_contains(svc corev1.Service, LBservices *corev1.ServiceList) bool {
-	for _, s := range LBservices.Items {
-		if s.Spec.Type != "LoadBalancer" {
-			continue
-		}
-		for _, port1 := range s.Spec.Ports {
-			for _, port2 := range svc.Spec.Ports {
-				if port1.NodePort == port2.NodePort {
-					return true
-				}
-			}
-		}
-	}
-	return false
 }
 
 func data_contains(data []interface{}, item map[string]string) bool {
@@ -225,8 +176,6 @@ func (c *Controller) add_FWrule(svc corev1.Service) {
 
 		if !data_contains(d, portForwards) {
 
-			// fmt.Println("New port forwarding rule: ", portForwards)
-
 			newFWrule = true
 			d = append(d, portForwards)
 
@@ -240,13 +189,11 @@ func (c *Controller) add_FWrule(svc corev1.Service) {
 }
 
 func saveData(data []map[string]string, filename string) error {
-	// Marshal the list of maps to JSON
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		return err
 	}
 
-	// Write the JSON data to a file
 	file, err := os.Create(filename)
 	if err != nil {
 		return err
@@ -258,14 +205,12 @@ func saveData(data []map[string]string, filename string) error {
 }
 
 func loadData(filename string) ([]map[string]string, error) {
-	// Open the file
 	file, err := os.OpenFile(filename, os.O_RDWR|os.O_CREATE, 0666)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
 
-	// Read the JSON data from the file
 	jsonData, err := io.ReadAll(file)
 	if err != nil {
 		return nil, err
@@ -275,7 +220,6 @@ func loadData(filename string) ([]map[string]string, error) {
 		return []map[string]string{}, nil
 	}
 
-	// Unmarshal the JSON data into a list of maps
 	var data []map[string]string
 	err = json.Unmarshal(jsonData, &data)
 	if err != nil {
@@ -372,28 +316,20 @@ func (c *Controller) Reconcile() {
 	for _, svc := range services.Items {
 		if svc.Spec.Type == "LoadBalancer" {
 			has_FWrule := c.LBsvc_has_FWrule(svc)
-			// fmt.Printf("Service %s has FW rule: %v\n", svc.Name, has_FWrule)
 			if !has_FWrule {
 				update = true
 				c.addIPtoLBsvc(svc)
 				c.add_FWrule(svc)
-				has_FWrule = true
 			}
 		}
 	}
-
 	neededFWrules := c.FWrules_need()
-
-	if c.internal_state {
+	if c.state { // persistent state
 		oldFWrules, err := loadData("state.json")
 		if err != nil {
 			log.Fatal(err)
 		}
-		// fmt.Printf("Current FW rules: %v\n\n", neededFWrules)
 		rules_to_delete := FWrules_to_delete(oldFWrules, neededFWrules)
-		// fmt.Printf("Rules to delete: %v\n", rules_to_delete)
-
-		// delete rules from router and make update true
 		if len(rules_to_delete) > 0 {
 			c.Delete_FWrules(rules_to_delete)
 			update = true
@@ -405,13 +341,10 @@ func (c *Controller) Reconcile() {
 				log.Fatal(err)
 			}
 		}
-	} else { // no internal state
+	} else { // no state
 		oldFWrules := c.listFW()
-
 		rules_to_delete := FWrules_to_delete(oldFWrules, neededFWrules)
 		rules_to_delete = c.remove_other_rules(rules_to_delete)
-		//log.Println(rules_to_delete)
-
 		if len(rules_to_delete) > 0 {
 			c.Delete_FWrules(rules_to_delete)
 		}
